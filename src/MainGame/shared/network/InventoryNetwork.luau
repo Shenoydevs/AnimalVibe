@@ -1,0 +1,4 @@
+--!strict
+return {
+	Inventory = "Inventory",
+}

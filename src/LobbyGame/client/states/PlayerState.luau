@@ -1,0 +1,12 @@
+--!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Fusion = require(ReplicatedStorage.Packages.Fusion)
+
+local scope = Fusion.scoped(Fusion)
+
+return {
+	Level = scope:Value(1),
+	Xp = scope:Value(0),
+	Coins = scope:Value(0),
+}

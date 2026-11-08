@@ -1,0 +1,37 @@
+{
+  "name": "AnimalSurvivalFinal",
+  "servePort": 8000,
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "$ignoreUnknownInstances": true,
+      "Shared": {
+        "$path": "src/MainGame/shared"
+      },
+      "Packages": {
+        "$path": "Packages"
+      },
+      "Common": {
+        "$path": "src/Common"
+      }
+    },
+
+    "ServerScriptService": {
+      "$ignoreUnknownInstances": true,
+      "Server": {
+        "$path": "src/MainGame/server"
+      }
+    },
+
+    "StarterPlayer": {
+      "$ignoreUnknownInstances": true,
+      "StarterPlayerScripts": {
+        "$ignoreUnknownInstances": true,
+        "Client": {
+          "$path": "src/MainGame/client"
+        }
+      }
+    }
+  }
+}

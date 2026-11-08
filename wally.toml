@@ -1,0 +1,19 @@
+[package]
+name = "sheno/animalsurvivalfinal"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+
+[dependencies]
+promise = "evaera/promise@4.0.0"
+DataService = "leifstout/dataservice@1.0.0"
+Component = "sleitnick/component@2.4.8"
+Timer = "sleitnick/timer@2.0.0"
+Trove = "sleitnick/trove@1.8.0"
+WaitFor = "sleitnick/wait-for@1.0.0"
+Signal = "sleitnick/signal@2.0.3"
+Networker = "leifstout/networker@0.3.1"
+Loader = "sleitnick/loader@2.0.0"
+Fusion = "elttob/fusion@0.3.0"
+Shake = "sleitnick/shake@1.1.0"
+QuickZone = "ldgerrits/quickzone@^1.4.7"

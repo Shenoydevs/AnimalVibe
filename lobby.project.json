@@ -1,0 +1,30 @@
+{
+  "name": "AnimalSurvivalLobby",
+  "servePort": 8001,
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/LobbyGame/shared"
+      },
+      "Packages": {
+        "$path": "Packages"
+      },
+      "Common": {
+        "$path": "src/Common"
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/LobbyGame/server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "src/LobbyGame/client"
+        }
+      }
+    }
+  }
+}

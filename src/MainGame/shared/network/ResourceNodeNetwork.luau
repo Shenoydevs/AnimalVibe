@@ -1,0 +1,4 @@
+--!strict
+return {
+	ResourceNode = "ResourceNode",
+}
