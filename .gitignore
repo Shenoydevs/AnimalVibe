@@ -1,2 +1,20 @@
+# Project place file
+/AnimalSurvivalFinal.rbxlx
+
+# Roblox Studio lock files
+/*.rbxlx.lock
+/*.rbxl.lock
 Packages/
 sourcemap.json
+wally.lock
+
+# Personal editor settings
+/.idea/
+
+/.pi/
+/.memory/
+/.claude/
+/AGENTS.md
+/docs/
+/.mcp.json
+/mcp.json
