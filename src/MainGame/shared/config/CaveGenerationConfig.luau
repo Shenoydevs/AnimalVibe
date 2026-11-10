@@ -31,6 +31,14 @@ local caveGenerationConfig = {
 		{ min = 30, max = 50 },
 		{ min = 75, max = 90 },
 	} :: { { min: number, max: number } },
+	-- Extra shallow shelters per biome on top of siteWindows. A one-layer cave plus its hill blend spans ~18 chunks,
+	-- so window.max must stay under biomeDepth.min - 18.
+	extraSites = {
+		count = 2,
+		layers = 1,
+		window = { min = 25, max = 120 },
+		spacingStuds = 60,
+	},
 	campfireRadius = 18,
 	campfireHalfHeight = 12,
 	maxAssetSize = 14,

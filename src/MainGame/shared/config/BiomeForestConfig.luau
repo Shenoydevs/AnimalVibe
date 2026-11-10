@@ -15,16 +15,49 @@ local _houseCount: number = 4
 local _houseMinGap: number = 18
 local _houseMinPathOffset: number = 8
 local _houseMaxPathOffset: number = 24
+-- Outer band: flat ground the wider map adds between the inner houses and the side rise.
+local _outerHouseCount: number = 2
+local _outerHouseMinGap: number = 18
+local _outerHouseMinPathOffset: number = 26
+local _outerHouseMaxPathOffset: number = 36
+local _outerHouseMaxSlopeSpread: number = 6
+local _outerHouseAttempts: number = 20
 
 local function generateFeatures(ctx: BiomeContext): ()
 	local bands: { { min: number, max: number } } = BiomeUtils.shuffledBands(ctx, 2, nil, _startClearanceChunks)
 
-	BiomeUtils.placeHouses(ctx, { "House 1", "House 2", "House 3", "House 4" }, _houseCount, bands[1].min, bands[1].max, _biomeName, _logTag, {
-		subSegment = true,
-		minGap = _houseMinGap,
-		minPathOffset = _houseMinPathOffset,
-		maxPathOffset = _houseMaxPathOffset,
-	})
+	BiomeUtils.placeHouses(
+		ctx,
+		{ "House 1", "House 2", "House 3", "House 4" },
+		_houseCount,
+		bands[1].min,
+		bands[1].max,
+		_biomeName,
+		_logTag,
+		{
+			subSegment = true,
+			minGap = _houseMinGap,
+			minPathOffset = _houseMinPathOffset,
+			maxPathOffset = _houseMaxPathOffset,
+		}
+	)
+	BiomeUtils.placeHouses(
+		ctx,
+		{ "House 1", "House 2", "House 3", "House 4" },
+		_outerHouseCount,
+		ctx.biomeMinZ + _startClearanceChunks,
+		ctx.biomeMaxZ - 5,
+		_biomeName,
+		_logTag,
+		{
+			subSegment = true,
+			minGap = _outerHouseMinGap,
+			minPathOffset = _outerHouseMinPathOffset,
+			maxPathOffset = _outerHouseMaxPathOffset,
+			maxSlopeSpread = _outerHouseMaxSlopeSpread,
+			attempts = _outerHouseAttempts,
+		}
+	)
 	BiomeUtils.placeScatteredChests(ctx, 2, 3, _biomeName)
 	BiomeUtils.carvePond(ctx, {
 		minCZ = bands[2].min,
@@ -47,7 +80,8 @@ return {
 	hillNoiseScale = 90,
 	grassDetailHeight = 3,
 	grassDetailScale = 16,
-	grassPatchThreshold = 0.18,
+	-- Low enough that tall decorated Grass is the norm and LeafyGrass only shows as clearings.
+	grassPatchThreshold = -0.12,
 	rollHeight = 6,
 	PropChance = {
 		["None"] = 1100,

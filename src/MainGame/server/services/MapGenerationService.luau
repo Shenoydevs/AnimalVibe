@@ -33,6 +33,17 @@ type populationChunk = {
 	templates: { propTemplate },
 }
 type populationRow = { left: number, right: number, biome: biome, cache: biomeCache }
+type timings = {
+	started: number,
+	terrainCpu: number,
+	terrainBatches: number,
+	featureWall: number,
+	populationCpu: number,
+	populationChunks: number,
+}
+
+local _minstdModulus: number = 2147483647
+local _minstdMultiplier: number = 48271
 
 local _biomes: { biome } = _mapConfig.biomeSequence
 local _chunkStuds: number = _config.chunkScale * 4
@@ -46,7 +57,7 @@ local _rayTop: number = 0
 local _surface: _terrainSurface.terrainSurface? = nil
 local _caves: _caveGenerator.caveGenerator? = nil
 local _trove = _troveModule.new()
-local _chunks: { [string]: boolean } = {}
+local _chunks: { [number]: boolean } = {}
 local _terrainRegions: { Region3 } = {}
 local _pendingPopulation: { populationChunk } = {}
 -- Props wait here until the features that could overlap them exist, keyed by the biome that must be featured first.
@@ -56,7 +67,7 @@ local _populationRows: { [number]: populationRow } = {}
 -- TaskQueue flushes an entire batch on defer; these cursors carry unfinished work across frame budgets.
 local _populationHead: number = 1
 local _streamQueue: { streamRun } = {}
-local _streamQueued: { [string]: boolean } = {}
+local _streamQueued: { [number]: boolean } = {}
 local _streamHead: number = 1
 local _keepouts: _keepoutRegistry.KeepoutRegistry = _keepoutRegistry.new()
 local _biomeFolders: { [string]: Folder } = {}
@@ -67,6 +78,7 @@ local _pregenComplete: boolean = false
 local _session: number = 0
 local _cancelled: boolean = true
 local _caveAssets: { [string]: _cavePopulation.assetCache } = {}
+local _timings: timings? = nil
 
 local _params: RaycastParams = RaycastParams.new()
 _params.FilterType = Enum.RaycastFilterType.Include
@@ -87,8 +99,14 @@ local function _getCaves(): _caveGenerator.caveGenerator
 	return caves
 end
 
-local function _chunkKey(x: number, z: number): string
-	return `{x}:{z}`
+-- Hot path (every chunk write and every stream scan); integer keys avoid a string build per lookup. |x| < 2048.
+local function _chunkKey(x: number, z: number): number
+	return z * 4096 + x
+end
+
+-- One MINSTD step: products stay under 2^53, so the result is exact and identical on every server.
+local function _minstd(state: number): number
+	return (state * _minstdMultiplier) % _minstdModulus
 end
 
 local function _biomeIndexAt(chunkZ: number): number
@@ -174,8 +192,8 @@ local function _buildBiomeCaches(): ()
 	end
 end
 
-local function _pickCategory(cache: biomeCache, random: Random): string
-	local roll: number = random:NextNumber(0, cache.totalWeight)
+local function _pickCategory(cache: biomeCache, unit: number): string
+	local roll: number = unit * cache.totalWeight
 	local lo: number, hi: number = 1, #cache.weights
 	while lo < hi do
 		local mid: number = math.floor((lo + hi) / 2)
@@ -216,18 +234,18 @@ local function _queuePopulation(x: number, z: number): ()
 	if x + 1 >= row.left and x <= row.right then
 		return
 	end
-	local random: Random = Random.new((_seed + x * 73856093 + z * 19349663) % 2147483647)
-	local category: string = _pickCategory(row.cache, random)
+	-- Most chunks roll "None"; hash the roll so a Random object is only created for chunks that place a prop.
+	local state: number = _minstd(_minstd((_seed + x * 73856093 + z * 19349663) % _minstdModulus))
+	local category: string = _pickCategory(row.cache, state / _minstdModulus)
 	local templates: { propTemplate }? = row.cache.models[category]
 	if category == "None" or not templates or #templates == 0 then
 		return
 	end
-	-- Keep the per-chunk RNG after its category roll so later template/rotation choices stay identical.
 	local pending: populationChunk = {
 		x = x,
 		z = z,
 		category = category,
-		random = random,
+		random = Random.new(_minstd(state)),
 		biome = row.biome,
 		templates = templates,
 	}
@@ -253,7 +271,13 @@ local function _makeChunks(firstX: number, lastX: number, z: number): ()
 		while endX < lastX and endX - x + 1 < _config.terrainBatchChunks and not _chunks[_chunkKey(endX + 1, z)] do
 			endX += 1
 		end
+		local timing: timings? = _timings
+		local writeStart: number = os.clock()
 		table.insert(_terrainRegions, _terrainWriter.writeChunks(_getSurface(), _getCaves(), _startPos, x, z, endX))
+		if timing then
+			timing.terrainCpu += os.clock() - writeStart
+			timing.terrainBatches += 1
+		end
 		for cx = x, endX do
 			_chunks[_chunkKey(cx, z)] = true
 			if z <= _mapDepth then
@@ -361,7 +385,22 @@ local function _biomeContext(index: number, assets: Instance): _biomeTypes.Biome
 	}
 end
 
+local function _logTimings(stage: string): ()
+	local timing: timings? = _timings
+	if not timing then
+		return
+	end
+	warn(
+		`[MapGenerationService] {stage} after {string.format("%.2f", os.clock() - timing.started)}s`
+			.. ` seed={_seed} halfWidth={_halfWidth} biomeDepth={_biomeDepth}`
+			.. ` terrainCpu={string.format("%.2f", timing.terrainCpu)}s batches={timing.terrainBatches}`
+			.. ` featureWall={string.format("%.2f", timing.featureWall)}s`
+			.. ` populationCpu={string.format("%.2f", timing.populationCpu)}s chunks={timing.populationChunks}`
+	)
+end
+
 local function _generateBiomeFeatures(index: number): ()
+	local featureStart: number = os.clock()
 	local biome: biome = _biomes[index]
 	local assets: Instance? = _replicatedStorage.Assets:FindFirstChild(biome.PropFolder)
 	if assets then
@@ -381,6 +420,11 @@ local function _generateBiomeFeatures(index: number): ()
 		table.insert(_pendingPopulation, pending)
 	end
 	_blockedPopulation[index] = nil
+	local timing: timings? = _timings
+	if timing then
+		-- Wall time: feature placement yields (ponds wait a frame), so this includes those waits.
+		timing.featureWall += os.clock() - featureStart
+	end
 	_gameSignals.BiomeFeaturesGenerated:Fire(_biomeFolders[biome.Name])
 end
 
@@ -393,6 +437,16 @@ function mapGenerationService:GetBiomeIndex(biomeName: string): number
 end
 
 local function _startGeneration(session: number): ()
+	_timings = if _config.logTimings and _runService:IsStudio()
+		then {
+			started = os.clock(),
+			terrainCpu = 0,
+			terrainBatches = 0,
+			featureWall = 0,
+			populationCpu = 0,
+			populationChunks = 0,
+		}
+		else nil
 	_seed = _config.seed or Random.new():NextInteger(1, 1000000)
 	_generationSeed = Random.new(_seed)
 	local startPart: Instance = workspace:WaitForChild("StartPart")
@@ -502,11 +556,15 @@ local function _startGeneration(session: number): ()
 	local cart: Model = _trove:Add(cartTemplate:Clone())
 	cart:PivotTo(CFrame.new(cartGround + Vector3.new(0, 4, 0)) * CFrame.Angles(0, math.pi, 0))
 	cart.Parent = cartFolder
+	_logTimings("Spawn ready")
 	_gameSignals.MapSpawnReady:Fire()
 	local background: thread = task.spawn(function(): ()
 		local nextBiome: number = 1
 		local function featureReadyBiomes(z: number): ()
-			while nextBiome <= #_biomes and z >= math.min(nextBiome * _biomeDepth + _config.featureMarginChunks, _mapDepth) do
+			while
+				nextBiome <= #_biomes
+				and z >= math.min(nextBiome * _biomeDepth + _config.featureMarginChunks, _mapDepth)
+			do
 				_generateBiomeFeatures(nextBiome)
 				assert(not _cancelled and session == _session, "Map generation cancelled")
 				nextBiome += 1
@@ -526,6 +584,7 @@ local function _startGeneration(session: number): ()
 		end
 		_pregenComplete = true
 		featureReadyBiomes(_mapDepth)
+		_logTimings("Pregeneration complete")
 		_gameSignals.MapGenerationCompleted:Fire()
 	end)
 	_trove:Add(background)
@@ -555,10 +614,18 @@ local function _startGeneration(session: number): ()
 			table.clear(_streamQueue)
 			_streamHead = 1
 		end
+		local populationStart: number = os.clock()
+		local populated: number = 0
 		while _populationHead <= #_pendingPopulation and os.clock() < deadline do
 			local chunk: populationChunk = _pendingPopulation[_populationHead]
 			_populationHead += 1
 			_populateChunk(chunk)
+			populated += 1
+		end
+		local timing: timings? = _timings
+		if timing and populated > 0 then
+			timing.populationCpu += os.clock() - populationStart
+			timing.populationChunks += populated
 		end
 		if _populationHead > #_pendingPopulation then
 			table.clear(_pendingPopulation)
@@ -579,6 +646,7 @@ function mapGenerationService.stop(): ()
 	_populationHead, _streamHead = 1, 1
 	_featuredBiomes, _pregenComplete = 0, false
 	_keepouts = _keepoutRegistry.new()
+	_timings = nil
 	_startPos = Vector3.zero
 	_halfWidth, _mapDepth, _seed, _rayTop = 0, 0, 0, 0
 	_biomeDepth = _mapConfig.biomeDepth.min

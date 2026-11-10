@@ -21,6 +21,6 @@ return {
 		require(script.Parent.BiomeArcticConfig),
 	},
 	biomeDepth = { min = 150, max = 180 }, -- 1500-1800 studs (10 studs/chunk)
-	halfWidth = { min = 45, max = 55 }, -- 900-1100 studs total width, randomized per server
+	halfWidth = { min = 70, max = 85 }, -- 1400-1700 studs total width, randomized per server
 	biomeBlendChunks = 8,
 } :: MapConfig

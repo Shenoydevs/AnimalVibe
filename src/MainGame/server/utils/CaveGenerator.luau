@@ -52,7 +52,7 @@ export type caveGenerator = typeof(setmetatable(
 		caves: { cave },
 		_seed: number,
 		_startPos: Vector3,
-		_cells: { [string]: { passage } },
+		_cells: { [number]: { passage } },
 		_materials: { [passage]: Enum.Material },
 	},
 	caveGenerator
@@ -98,19 +98,20 @@ local function _shapeLandform(form: landform, x: number, z: number, surface: num
 	local raised: number = math.max(surface, form.entry.Y + form.height + crown + ridge + detail)
 	local height: number = surface + (raised - surface) * weight
 	local apron: number = (1 - _smoothstep(form.radius * 0.65, form.radius, frontDistance))
-		* _smoothstep(-35, 0, along) * (1 - front)
+		* _smoothstep(-35, 0, along)
+		* (1 - front)
 	height += (form.entry.Y - height) * apron
 	local mouthEdge: number = _config.entranceRadius
 		+ _config.mouthRockWidth
 		+ math.noise(x / 9, z / 9, form.seed + 29) * _config.mouthRockWidth * 0.6
 	local mouth: boolean = frontDistance < mouthEdge and along > -6 and along < _config.entranceRiseLength + 6
-	local outcrop: boolean = weight > 0.35
-		and math.noise(x / 22, z / 22, form.seed + 41) > _config.outcropThreshold
+	local outcrop: boolean = weight > 0.35 and math.noise(x / 22, z / 22, form.seed + 41) > _config.outcropThreshold
 	return height, mouth or outcrop
 end
 
-local function _cellKey(x: number, z: number): string
-	return `{x}:{z}`
+-- Called for every terrain chunk; an integer key avoids building a string per lookup. |x| stays far below 2048.
+local function _cellKey(x: number, z: number): number
+	return z * 4096 + x
 end
 
 function caveGenerator.passagesAt(self: caveGenerator, chunkX: number, chunkZ: number): { passage }
@@ -245,6 +246,135 @@ local function _hasCover(surface: _terrainSurface.terrainSurface, cave: cave): b
 	return true
 end
 
+-- Lays out one cave at chunk depth `siteZ` on `side`; returns nil when the finished hillside cannot roof it.
+local function _buildCave(
+	surface: _terrainSurface.terrainSurface,
+	startPos: Vector3,
+	seed: number,
+	random: Random,
+	index: number,
+	biome: _biomeTypes.Biome,
+	layers: number,
+	side: number,
+	siteZ: number,
+	halfWidth: number
+): cave?
+	local chunkStuds: number = _mapConfig.chunkScale * 4
+	local baseZ: number = startPos.Z + siteZ * chunkStuds
+	local entryX: number = startPos.X + side * halfWidth * chunkStuds * _config.entranceWidthFraction
+	local outerX: number = startPos.X + side * halfWidth * chunkStuds * _config.outerWidthFraction
+	local ground: number = surface:sample(entryX, baseZ)
+	local entry: Vector3 = Vector3.new(entryX, ground - 1, baseZ)
+	local shelter: Vector3 = Vector3.new(outerX, entry.Y, baseZ + 40)
+	-- Start the descent beyond the room footprint so its carving cannot turn the shelter into a ramp.
+	local innerOffset: number = _config.shelterRadius + _config.tunnelRadius + 8
+	local descent: Vector3 = shelter + Vector3.new(0, 0, innerOffset)
+	local form: landform = {
+		seed = seed,
+		entry = entry,
+		shelter = shelter,
+		back = if layers >= 2 then descent else shelter,
+		radius = _config.shelterRadius + _config.wallNoiseStrength + 4,
+		height = math.max(_config.entranceHeight, _config.shelterHeight)
+			+ _config.wallNoiseStrength
+			+ _config.roofThickness
+			+ 4,
+	}
+	local cave: cave = {
+		biomeIndex = index,
+		passages = {},
+		landform = form,
+		destinations = {},
+		material = if biome.TerrainType == Enum.Material.Snow then Enum.Material.Glacier else Enum.Material.Rock,
+	}
+	_addPassage(cave, entry, shelter, _config.entranceRadius, _config.entranceHeight, true)
+	_addRoom(cave, shelter, _config.shelterRadius, _config.shelterHeight, 1, layers == 1, 1)
+	if layers >= 2 then
+		local innerZ: number = baseZ + innerOffset
+		local underground: Vector3 = Vector3.new(outerX, shelter.Y - 40, innerZ + random:NextNumber(160, 180))
+		local junction: Vector3 = Vector3.new(outerX - side * 38, shelter.Y - 68, innerZ + 280)
+		_addPassage(cave, shelter, descent, _config.tunnelRadius, _config.tunnelHeight)
+		_addPassage(cave, descent, underground, _config.tunnelRadius, _config.tunnelHeight)
+		_addRoom(cave, underground, 28, 28, 2, true, 1)
+		_addPassage(cave, underground, junction, _config.tunnelRadius + 1, _config.tunnelHeight)
+		_addRoom(cave, junction, 22, 25, 2, false, 1)
+		local alcove: Vector3 = Vector3.new(outerX - side * random:NextNumber(75, 90), shelter.Y - 52, innerZ + 215)
+		_addPassage(cave, underground, alcove, _config.tunnelRadius, _config.tunnelHeight)
+		_addRoom(cave, alcove, 19, 22, 2, false, 1)
+		if random:NextNumber() < 0.75 then
+			_addPassage(cave, alcove, junction, _config.tunnelRadius, _config.tunnelHeight)
+		end
+		if layers >= 3 then
+			local bend: Vector3 = Vector3.new(outerX, shelter.Y - 92, innerZ + 370)
+			local deep: Vector3 = Vector3.new(outerX - side * 48, shelter.Y - 118, innerZ + random:NextNumber(465, 490))
+			_addPassage(cave, junction, bend, _config.tunnelRadius, _config.tunnelHeight + 2)
+			_addPassage(cave, bend, deep, _config.tunnelRadius + 1, _config.tunnelHeight + 2)
+			_addRoom(cave, deep, 32, 36, 3, false, 2)
+		end
+	end
+	if not _hasCover(surface, cave) then
+		return nil
+	end
+	table.insert(cave.passages, {
+		a = entry,
+		b = form.back,
+		radius = form.radius + _config.entranceTerrainBlend + _config.hillWarpStrength,
+		height = form.height,
+		entrance = true,
+		landform = form,
+	})
+	return cave
+end
+
+-- Footprint used for spacing: the landform's full blend radius would forbid any neighbour, so use the half-blend
+-- that reserve() already treats as the cave's core.
+local function _footprintRadius(passage: passage): number
+	local form: landform? = passage.landform
+	return if form then form.radius + _config.entranceTerrainBlend * 0.5 else passage.radius
+end
+
+-- Horizontal clearance only: deep tunnels of another cave must not pass under a new shelter either.
+local function _isClearOf(self: caveGenerator, candidate: cave, spacing: number): boolean
+	for _, passage in candidate.passages do
+		local radius: number = _footprintRadius(passage)
+		local steps: number = math.max(1, math.ceil((passage.b - passage.a).Magnitude / 10))
+		for step = 0, steps do
+			local point: Vector3 = passage.a:Lerp(passage.b, step / steps)
+			for _, other in self.caves do
+				for _, existing in other.passages do
+					local distance: number = _projectSegment(existing.a, existing.b, point.X, point.Z)
+					if distance < radius + _footprintRadius(existing) + spacing then
+						return false
+					end
+				end
+			end
+		end
+	end
+	return true
+end
+
+local function _commitCave(self: caveGenerator, cave: cave): ()
+	local chunkStuds: number = _mapConfig.chunkScale * 4
+	local startPos: Vector3 = self._startPos
+	table.insert(self.caves, cave)
+	for _, passage in cave.passages do
+		self._materials[passage] = cave.material
+		local padding: number = passage.radius + _config.roofThickness * 2 + 4
+		local minX: number = math.floor((math.min(passage.a.X, passage.b.X) - padding - startPos.X) / chunkStuds)
+		local maxX: number = math.floor((math.max(passage.a.X, passage.b.X) + padding - startPos.X) / chunkStuds)
+		local minZ: number = math.floor((math.min(passage.a.Z, passage.b.Z) - padding - startPos.Z) / chunkStuds)
+		local maxZ: number = math.floor((math.max(passage.a.Z, passage.b.Z) + padding - startPos.Z) / chunkStuds)
+		for x = minX, maxX do
+			for z = minZ, maxZ do
+				local key: number = _cellKey(x, z)
+				local cell: { passage } = self._cells[key] or {}
+				self._cells[key] = cell
+				table.insert(cell, passage)
+			end
+		end
+	end
+end
+
 function caveGenerator.new(
 	surface: _terrainSurface.terrainSurface,
 	startPos: Vector3,
@@ -268,7 +398,8 @@ function caveGenerator.new(
 			and _config.entranceRidgeHeight >= 0,
 		"Cave entrance and shelter must accommodate the connecting tunnels"
 	)
-	local chunkStuds: number = _mapConfig.chunkScale * 4
+	local extra = _config.extraSites
+	assert(extra.layers >= 1 and extra.layers <= 3 and extra.layers % 1 == 0, "Extra cave layers must be 1 to 3")
 	local random: Random = Random.new(seed)
 	for index, biome in biomes do
 		local layers: number = _config.layersByBiome[biome.Name] or 2
@@ -280,95 +411,32 @@ function caveGenerator.new(
 		for windowIndex, window in _config.siteWindows do
 			local side: number = if windowIndex % 2 == 1 then firstSide else -firstSide
 			for _ = 1, _config.siteAttempts do
-				local baseZ: number = startPos.Z
-					+ ((index - 1) * biomeDepth + random:NextNumber(window.min, window.max)) * chunkStuds
-				local entryX: number = startPos.X + side * halfWidth * chunkStuds * _config.entranceWidthFraction
-				local outerX: number = startPos.X + side * halfWidth * chunkStuds * _config.outerWidthFraction
-				local entryZ: number = baseZ
-				local ground: number = surface:sample(entryX, entryZ)
-				local entry: Vector3 = Vector3.new(entryX, ground - 1, entryZ)
-				local shelter: Vector3 = Vector3.new(outerX, entry.Y, baseZ + 40)
-				-- Start the descent beyond the room footprint so its carving cannot turn the shelter into a ramp.
-				local innerOffset: number = _config.shelterRadius + _config.tunnelRadius + 8
-				local descent: Vector3 = shelter + Vector3.new(0, 0, innerOffset)
-				local form: landform = {
-					seed = seed,
-					entry = entry,
-					shelter = shelter,
-					back = if layers >= 2 then descent else shelter,
-					radius = _config.shelterRadius + _config.wallNoiseStrength + 4,
-					height = math.max(_config.entranceHeight, _config.shelterHeight)
-						+ _config.wallNoiseStrength + _config.roofThickness + 4,
-				}
-				local cave: cave = {
-					biomeIndex = index,
-					passages = {},
-					landform = form,
-					destinations = {},
-					material = if biome.TerrainType == Enum.Material.Snow
-						then Enum.Material.Glacier
-						else Enum.Material.Rock,
-				}
-				_addPassage(cave, entry, shelter, _config.entranceRadius, _config.entranceHeight, true)
-				_addRoom(cave, shelter, _config.shelterRadius, _config.shelterHeight, 1, layers == 1, 1)
-				if layers >= 2 then
-					local innerZ: number = baseZ + innerOffset
-					local underground: Vector3 = Vector3.new(outerX, shelter.Y - 40, innerZ + random:NextNumber(160, 180))
-					local junction: Vector3 = Vector3.new(outerX - side * 38, shelter.Y - 68, innerZ + 280)
-					_addPassage(cave, shelter, descent, _config.tunnelRadius, _config.tunnelHeight)
-					_addPassage(cave, descent, underground, _config.tunnelRadius, _config.tunnelHeight)
-					_addRoom(cave, underground, 28, 28, 2, true, 1)
-					_addPassage(cave, underground, junction, _config.tunnelRadius + 1, _config.tunnelHeight)
-					_addRoom(cave, junction, 22, 25, 2, false, 1)
-					local alcove: Vector3 =
-						Vector3.new(outerX - side * random:NextNumber(75, 90), shelter.Y - 52, innerZ + 215)
-					_addPassage(cave, underground, alcove, _config.tunnelRadius, _config.tunnelHeight)
-					_addRoom(cave, alcove, 19, 22, 2, false, 1)
-					if random:NextNumber() < 0.75 then
-						_addPassage(cave, alcove, junction, _config.tunnelRadius, _config.tunnelHeight)
-					end
-					if layers >= 3 then
-						local bend: Vector3 = Vector3.new(outerX, shelter.Y - 92, innerZ + 370)
-						local deep: Vector3 =
-							Vector3.new(outerX - side * 48, shelter.Y - 118, innerZ + random:NextNumber(465, 490))
-						_addPassage(cave, junction, bend, _config.tunnelRadius, _config.tunnelHeight + 2)
-						_addPassage(cave, bend, deep, _config.tunnelRadius + 1, _config.tunnelHeight + 2)
-						_addRoom(cave, deep, 32, 36, 3, false, 2)
-					end
+				local siteZ: number = (index - 1) * biomeDepth + random:NextNumber(window.min, window.max)
+				local cave: cave? =
+					_buildCave(surface, startPos, seed, random, index, biome, layers, side, siteZ, halfWidth)
+				if cave then
+					_commitCave(self, cave)
+					break
 				end
-				if not _hasCover(surface, cave) then
-					continue
+			end
+		end
+	end
+	-- Extra shelters run after every main cave exists so spacing is checked against the full layout.
+	for index, biome in biomes do
+		if (_config.layersByBiome[biome.Name] or 2) <= 0 then
+			continue
+		end
+		local layers: number = math.min(extra.layers, _config.layersByBiome[biome.Name] or 2)
+		for _ = 1, extra.count do
+			for _ = 1, _config.siteAttempts do
+				local side: number = if random:NextNumber() < 0.5 then -1 else 1
+				local siteZ: number = (index - 1) * biomeDepth + random:NextNumber(extra.window.min, extra.window.max)
+				local cave: cave? =
+					_buildCave(surface, startPos, seed, random, index, biome, layers, side, siteZ, halfWidth)
+				if cave and _isClearOf(self, cave, extra.spacingStuds) then
+					_commitCave(self, cave)
+					break
 				end
-				table.insert(cave.passages, {
-					a = entry,
-					b = form.back,
-					radius = form.radius + _config.entranceTerrainBlend + _config.hillWarpStrength,
-					height = form.height,
-					entrance = true,
-					landform = form,
-				})
-				table.insert(self.caves, cave)
-				for _, passage in cave.passages do
-					self._materials[passage] = cave.material
-					local padding: number = passage.radius + _config.roofThickness * 2 + 4
-					local minX: number =
-						math.floor((math.min(passage.a.X, passage.b.X) - padding - startPos.X) / chunkStuds)
-					local maxX: number =
-						math.floor((math.max(passage.a.X, passage.b.X) + padding - startPos.X) / chunkStuds)
-					local minZ: number =
-						math.floor((math.min(passage.a.Z, passage.b.Z) - padding - startPos.Z) / chunkStuds)
-					local maxZ: number =
-						math.floor((math.max(passage.a.Z, passage.b.Z) + padding - startPos.Z) / chunkStuds)
-					for x = minX, maxX do
-						for z = minZ, maxZ do
-							local key: string = _cellKey(x, z)
-							local cell: { passage } = self._cells[key] or {}
-							self._cells[key] = cell
-							table.insert(cell, passage)
-						end
-					end
-				end
-				break
 			end
 		end
 	end

@@ -68,11 +68,8 @@ function BiomeUtils.placeModel(container: Instance, model: Model, groundPos: Vec
 end
 
 local function groundMaterial(pos: Vector3): Enum.Material?
-	local ray: RaycastResult? = workspace:Raycast(
-		Vector3.new(pos.X, pos.Y + 15, pos.Z),
-		Vector3.new(0, -30, 0),
-		_rayParams
-	)
+	local ray: RaycastResult? =
+		workspace:Raycast(Vector3.new(pos.X, pos.Y + 15, pos.Z), Vector3.new(0, -30, 0), _rayParams)
 	return if ray then ray.Material else nil
 end
 
@@ -118,10 +115,8 @@ function BiomeUtils.placeAdjacentChest(ctx: BiomeContext, opts: AdjacentChestOpt
 	local seed: Random = ctx.seed
 	local angle: number = seed:NextNumber(0, math.pi * 2)
 	local dist: number = (opts.baseOffset or 0) + seed:NextNumber(opts.minDist, opts.maxDist)
-	local ground: Vector3? = ctx.findGround(
-		opts.anchor.X + math.cos(angle) * dist,
-		opts.anchor.Z + math.sin(angle) * dist
-	)
+	local ground: Vector3? =
+		ctx.findGround(opts.anchor.X + math.cos(angle) * dist, opts.anchor.Z + math.sin(angle) * dist)
 	if not ground then
 		return
 	end
@@ -176,12 +171,14 @@ end
 local function isFlatEnough(ctx: BiomeContext, center: Vector3, sampleDist: number, maxSpread: number): boolean
 	local minY: number = center.Y
 	local maxY: number = center.Y
-	for _, offset: Vector3 in {
-		Vector3.new(sampleDist, 0, 0),
-		Vector3.new(-sampleDist, 0, 0),
-		Vector3.new(0, 0, sampleDist),
-		Vector3.new(0, 0, -sampleDist),
-	} do
+	for _, offset: Vector3 in
+		{
+			Vector3.new(sampleDist, 0, 0),
+			Vector3.new(-sampleDist, 0, 0),
+			Vector3.new(0, 0, sampleDist),
+			Vector3.new(0, 0, -sampleDist),
+		}
+	do
 		local ground: Vector3? = ctx.findGround(center.X + offset.X, center.Z + offset.Z)
 		if not ground then
 			return false
@@ -200,7 +197,8 @@ local function _isValidCampsiteGround(ctx: BiomeContext, candidate: Vector3, cle
 end
 
 local function placeCampsite(ctx: BiomeContext, floorPos: Vector3, logTag: string, isCave: boolean?): ()
-	local clearing: Region3 = Region3.new(floorPos - Vector3.new(15, 8, 15), floorPos + Vector3.new(15, 4, 15)):ExpandToGrid(4)
+	local clearing: Region3 = Region3.new(floorPos - Vector3.new(15, 8, 15), floorPos + Vector3.new(15, 4, 15))
+		:ExpandToGrid(4)
 	workspace.Terrain:ReplaceMaterial(clearing, 4, Enum.Material.Grass, Enum.Material.LeafyGrass)
 	local campfire: Model? = BiomeUtils.cloneAsset(ctx.assets, "Camp Fire", logTag)
 	if campfire then
@@ -260,7 +258,6 @@ function BiomeUtils.placeOpenCampsite(ctx: BiomeContext, opts: OpenCampsiteOptio
 	})
 end
 
-
 -- Tops up a biome to its guaranteed campfire count, spacing them along the path.
 -- Open-field campsites already placed by the biome's generateFeatures count toward
 -- the quota; cave campsites do not.
@@ -279,7 +276,8 @@ function BiomeUtils.placeGuaranteedCampsites(ctx: BiomeContext, logTag: string):
 		end
 	end
 
-	local target: number = ctx.seed:NextInteger(_campfireConfig.campfiresPerBiome.min, _campfireConfig.campfiresPerBiome.max)
+	local target: number =
+		ctx.seed:NextInteger(_campfireConfig.campfiresPerBiome.min, _campfireConfig.campfiresPerBiome.max)
 	local needed: number = target - existing
 	if needed <= 0 then
 		return
@@ -317,6 +315,8 @@ export type PlaceHousesOptions = {
 	minGap: number?, -- extra studs reserved around each house on top of its footprint radius
 	minPathOffset: number?, -- chunks off-path to search; defaults to randomOffPathGround's own range
 	maxPathOffset: number?,
+	maxSlopeSpread: number?, -- reject sites whose ground spans more than this many studs across the footprint
+	attempts: number?, -- site attempts per house; defaults to 10 (14 with subSegment)
 }
 
 function BiomeUtils.placeHouses(
@@ -334,6 +334,8 @@ function BiomeUtils.placeHouses(
 	local subSegment: boolean = if opts then opts.subSegment == true else false
 	local minPathOffset: number? = if opts then opts.minPathOffset else nil
 	local maxPathOffset: number? = if opts then opts.maxPathOffset else nil
+	local maxSlopeSpread: number? = if opts then opts.maxSlopeSpread else nil
+	local attempts: number? = if opts then opts.attempts else nil
 	local segmentSize: number = (maxCZ - minCZ) / count
 
 	for i, houseName: string in BiomeUtils.sample(seed, housePool, count) do
@@ -349,19 +351,26 @@ function BiomeUtils.placeHouses(
 		local segMaxCZ: number = if subSegment then minCZ + i * segmentSize else maxCZ
 
 		local houseGround: Vector3? = nil
-		local maxAttempts: number = if subSegment then 14 else 10
+		local maxAttempts: number = attempts or (if subSegment then 14 else 10)
+		-- The last few attempts of a sub-segmented pass widen to the whole range.
+		local wideAfter: number = maxAttempts - 4
 		for attempt = 1, maxAttempts do
-			local wide: boolean = subSegment and attempt > 10
+			local wide: boolean = subSegment and attempt > wideAfter
 			local searchMinCZ: number = if wide then minCZ else segMinCZ
 			local searchMaxCZ: number = if wide then maxCZ else segMaxCZ
 			local candidate: Vector3? = ctx.randomOffPathGround(searchMinCZ, searchMaxCZ, minPathOffset, maxPathOffset)
 			if not candidate then
 				break
 			end
-			if ctx.keepouts:isClear(candidate.X, candidate.Z, clearRadius) then
-				houseGround = candidate
-				break
+			if not ctx.keepouts:isClear(candidate.X, candidate.Z, clearRadius) then
+				continue
 			end
+			-- Outer bands reach the side rise; placeModel would leave a house hanging off a slope.
+			if maxSlopeSpread and not isFlatEnough(ctx, candidate, houseRadius - 5, maxSlopeSpread) then
+				continue
+			end
+			houseGround = candidate
+			break
 		end
 		if not houseGround then
 			house:Destroy()
@@ -481,12 +490,7 @@ function BiomeUtils.carvePond(ctx: BiomeContext, opts: PondOptions): Vector3?
 	local waterLevel: number = wy - 1
 	ctx.keepouts:add(wx, wz, keepoutRadius)
 
-	workspace.Terrain:FillCylinder(
-		CFrame.new(wx, wy - 1, wz),
-		5,
-		radius + bankWidth,
-		bankMaterial
-	)
+	workspace.Terrain:FillCylinder(CFrame.new(wx, wy - 1, wz), 5, radius + bankWidth, bankMaterial)
 	workspace.Terrain:FillBall(Vector3.new(wx, wy + 3, wz), radius, Enum.Material.Air)
 	workspace.Terrain:FillBall(Vector3.new(wx, waterLevel - 6, wz), radius - 2, Enum.Material.Water)
 

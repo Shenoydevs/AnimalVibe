@@ -53,6 +53,7 @@ export type mapGenerationConfig = {
 	budgetMs: number,
 	terrainBatchChunks: number,
 	featureMarginChunks: number, -- terrain rows written past a biome's end before its features are placed
+	logTimings: boolean, -- Studio only: warn generation timings at spawn-ready and pregen-complete
 }
 
 return {
@@ -112,4 +113,5 @@ return {
 	budgetMs = 12,
 	terrainBatchChunks = 16, -- adjacent chunks per voxel write; bounded to keep frame-budget checks frequent
 	featureMarginChunks = 12,
+	logTimings = false,
 } :: mapGenerationConfig

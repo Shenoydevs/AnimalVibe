@@ -13,14 +13,47 @@ local _houseCount: number = 4
 local _houseMinGap: number = 18
 local _houseMinPathOffset: number = 8
 local _houseMaxPathOffset: number = 24
+-- Outer band: flat ground the wider map adds between the inner houses and the side rise.
+local _outerHouseCount: number = 2
+local _outerHouseMinGap: number = 18
+local _outerHouseMinPathOffset: number = 26
+local _outerHouseMaxPathOffset: number = 36
+local _outerHouseMaxSlopeSpread: number = 6
+local _outerHouseAttempts: number = 20
 
 local function generateFeatures(ctx: BiomeContext): ()
-	BiomeUtils.placeHouses(ctx, { "House 1", "House 2", "House 3", "House 4" }, _houseCount, ctx.biomeMinZ + 5, ctx.biomeMaxZ - 5, _biomeName, _logTag, {
-		subSegment = true,
-		minGap = _houseMinGap,
-		minPathOffset = _houseMinPathOffset,
-		maxPathOffset = _houseMaxPathOffset,
-	})
+	BiomeUtils.placeHouses(
+		ctx,
+		{ "House 1", "House 2", "House 3", "House 4" },
+		_houseCount,
+		ctx.biomeMinZ + 5,
+		ctx.biomeMaxZ - 5,
+		_biomeName,
+		_logTag,
+		{
+			subSegment = true,
+			minGap = _houseMinGap,
+			minPathOffset = _houseMinPathOffset,
+			maxPathOffset = _houseMaxPathOffset,
+		}
+	)
+	BiomeUtils.placeHouses(
+		ctx,
+		{ "House 1", "House 2", "House 3", "House 4" },
+		_outerHouseCount,
+		ctx.biomeMinZ + 5,
+		ctx.biomeMaxZ - 5,
+		_biomeName,
+		_logTag,
+		{
+			subSegment = true,
+			minGap = _outerHouseMinGap,
+			minPathOffset = _outerHouseMinPathOffset,
+			maxPathOffset = _outerHouseMaxPathOffset,
+			maxSlopeSpread = _outerHouseMaxSlopeSpread,
+			attempts = _outerHouseAttempts,
+		}
+	)
 	BiomeUtils.placeOpenCampsite(ctx, {
 		minCZ = ctx.biomeMinZ + 8,
 		maxCZ = ctx.biomeMaxZ - 8,
