@@ -10,7 +10,6 @@ local terrainWriter = {}
 
 type sample = {
 	height: number,
-	minY: number,
 	material: Enum.Material,
 	rockMaterial: Enum.Material,
 	cavities: { _caveGenerator.column },
@@ -56,36 +55,43 @@ function terrainWriter.writeChunks(
 	local maxX: number = math.ceil((startPos.X + (lastChunkX + 1) * chunkStuds) / 4) - 1
 	local minZ: number = math.ceil((startPos.Z + chunkZ * chunkStuds) / 4)
 	local maxZ: number = math.ceil((startPos.Z + (chunkZ + 1) * chunkStuds) / 4) - 1
-	local minY: number = math.floor((startPos.Y - _config.groundSlabDepth) / 4)
+	local minY: number = math.huge
 	local top: number = startPos.Y
 	local samples: { { sample } } = table.create(maxX - minX + 1)
+	local floors: { number } = table.create(maxX - minX + 1)
 	for cx = chunkX, lastChunkX do
 		local passages: { _caveGenerator.passage } = caves:passagesAt(cx, chunkZ)
-		local bottom: number = startPos.Y - _config.groundSlabDepth
+		local caveBottom: number = math.huge
 		for _, passage in passages do
-			bottom = math.min(bottom, passage.a.Y - _caveConfig.floorThickness, passage.b.Y - _caveConfig.floorThickness)
+			caveBottom =
+				math.min(caveBottom, passage.a.Y - _caveConfig.floorThickness, passage.b.Y - _caveConfig.floorThickness)
 		end
-		local chunkMinY: number = math.floor(bottom / 4)
-		minY = math.min(minY, chunkMinY)
 		local firstVoxelX: number = math.ceil((startPos.X + cx * chunkStuds) / 4)
 		local lastVoxelX: number = math.ceil((startPos.X + (cx + 1) * chunkStuds) / 4) - 1
 		for vx = firstVoxelX, lastVoxelX do
 			local row: { sample } = table.create(maxZ - minZ + 1)
+			local lowest: number = math.huge
 			for vz = minZ, maxZ do
 				local x: number, z: number = (vx + 0.5) * 4, (vz + 0.5) * 4
 				local height: number, material: Enum.Material = surface:sample(x, z)
 				local cavities: { _caveGenerator.column }, caveMaterial: Enum.Material?, surfaceMaterial: Enum.Material?
 				height, cavities, caveMaterial, surfaceMaterial = caves:column(passages, x, z, height)
 				top = math.max(top, height)
+				lowest = math.min(lowest, height)
 				table.insert(row, {
 					height = height,
-					minY = chunkMinY,
 					material = surfaceMaterial or material,
 					rockMaterial = caveMaterial or Enum.Material.Rock,
 					cavities = cavities,
 				})
 			end
+			-- The slab follows each column's own surface: rock under hills and the side rise is never seen,
+			-- and writing it from start height up made it about a third of all pregen voxels.
+			local floor: number =
+				math.floor(math.min(math.max(startPos.Y, lowest) - _config.groundSlabDepth, caveBottom) / 4)
+			minY = math.min(minY, floor)
 			table.insert(samples, row)
+			table.insert(floors, floor)
 		end
 	end
 	local maxY: number = math.ceil(top / 4)
@@ -102,7 +108,7 @@ function terrainWriter.writeChunks(
 		local rockMaxY: number = maxY
 		local rowMaxY: number = minY - 1
 		local caveMinY: number, caveMaxY: number = math.huge, -math.huge
-		local rowMinY: number = row[1].minY
+		local rowMinY: number = floors[ix]
 		for iz, sample in row do
 			rockRow[iz] = sample.rockMaterial
 			-- The voxel centre is two studs above vy * 4; rock ends eight studs below the surface.
@@ -123,7 +129,14 @@ function terrainWriter.writeChunks(
 			materialRows[vy - minY + 1], occupancyRows[vy - minY + 1] = airRow, emptyRow
 		end
 		_writeDetailRows(row, minY, math.max(rowMinY, rockMaxY + 1), rowMaxY, materialRows, occupancyRows)
-		_writeDetailRows(row, minY, math.max(rowMinY, caveMinY), math.min(rockMaxY, caveMaxY), materialRows, occupancyRows)
+		_writeDetailRows(
+			row,
+			minY,
+			math.max(rowMinY, caveMinY),
+			math.min(rockMaxY, caveMaxY),
+			materialRows,
+			occupancyRows
+		)
 		materials[ix] = materialRows
 		occupancies[ix] = occupancyRows
 	end

@@ -18,7 +18,7 @@ export type mapGenerationConfig = {
 	pondMaxHeightSpread: number,
 	grassPatchScale: number,
 	grassPatchThreshold: number,
-	groundSlabDepth: number,
+	groundSlabDepth: number, -- rock under each column's lowest surface (never measured from above the start height); caves extend it
 	chunkScale: number,
 	hillNoiseScale: number, -- default noise frequency for hills; biomes may override via Biome.hillNoiseScale
 	hillThreshold: number,
@@ -74,7 +74,8 @@ return {
 	pondMaxHeightSpread = 4,
 	grassPatchScale = 65,
 	grassPatchThreshold = 0.26,
-	groundSlabDepth = 64,
+	-- Deepest carve is a 26-radius pond, ~31 studs under its ground; 40 keeps rock beneath it.
+	groundSlabDepth = 40,
 	chunkScale = 2.5,
 	hillNoiseScale = 70,
 	hillThreshold = 0.4,
