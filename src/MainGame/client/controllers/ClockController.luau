@@ -3,12 +3,20 @@ local _collectionService = game:GetService("CollectionService")
 local _lighting = game:GetService("Lighting")
 local _replicatedStorage = game:GetService("ReplicatedStorage")
 local _troveModule = require(_replicatedStorage.Packages.Trove)
+local _dayNightConfig = require(_replicatedStorage.Shared.config.DayNightConfig)
 
 local _trove = _troveModule.new()
 local _clockTroves: { [Instance]: typeof(_troveModule.new()) } = {}
 local _labels: { [Instance]: TextLabel } = {}
 local _lastHour: number = -1
 local clockController = {}
+
+-- ClockTime is display-only (the sun is held during the day), so read the real hour the server publishes.
+local function _currentHour(): number
+	local hour: unknown = _lighting:GetAttribute(_dayNightConfig.gameHourAttribute)
+	if type(hour) == "number" then return hour end
+	return math.floor(_lighting.ClockTime)
+end
 
 local function _formatHour(hour: number): string
 	local displayHour: number = hour % 12
@@ -25,7 +33,7 @@ local function _refreshClock(instance: Instance): ()
 	local label: TextLabel? = surfaceGui:FindFirstChildWhichIsA("TextLabel", true)
 	if not label then return end
 	_labels[instance] = label
-	label.Text = _formatHour(math.floor(_lighting.ClockTime))
+	label.Text = _formatHour(_currentHour())
 end
 
 local function _trackClock(instance: Instance): ()
@@ -56,8 +64,8 @@ function clockController:OnStart(): ()
 	_trove:Connect(_collectionService:GetInstanceAddedSignal("Clock"), _trackClock)
 	_trove:Connect(_collectionService:GetInstanceRemovedSignal("Clock"), _untrackClock)
 	for _, instance in _collectionService:GetTagged("Clock") do _trackClock(instance) end
-	_trove:Connect(_lighting:GetPropertyChangedSignal("ClockTime"), function(): ()
-		local hour: number = math.floor(_lighting.ClockTime)
+	_trove:Connect(_lighting:GetAttributeChangedSignal(_dayNightConfig.gameHourAttribute), function(): ()
+		local hour: number = _currentHour()
 		if hour == _lastHour then return end
 		_lastHour = hour
 		local text: string = _formatHour(hour)

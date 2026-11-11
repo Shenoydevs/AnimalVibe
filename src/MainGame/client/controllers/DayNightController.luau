@@ -30,10 +30,16 @@ local _trove = Trove.new()
 local _transitionTrove = _trove:Extend()
 
 local _instantInfo = TweenInfo.new(0)
+local _transitionInfo = TweenInfo.new(
+	DayNightConfig.transitionDuration,
+	DayNightConfig.transitionEasingStyle,
+	DayNightConfig.transitionEasingDirection
+)
 
 local _networker: NetworkerClient
 local _phase: Phase = "Day"
 local _phaseInitialized = false
+local _darknessReadyAt = 0 -- os.clock() after which the outside-safezone darkness may build
 
 local _colorCorrection: ColorCorrectionEffect
 local _bloom: BloomEffect
@@ -48,29 +54,56 @@ local _cartModel: Model?
 local _cartLight: PointLight?
 local _cartLightBaseRange: number?
 local _nightLight: Instance?
+local _nightLightBases: { [Light]: number } = {}
 
 local DayNightController = {}
 
-local function _setNightLightEnabled(enabled: boolean): ()
+local function _setNightLightEnabled(enabled: boolean, info: TweenInfo): ()
 	local nightLight = _nightLight
 	if not nightLight or not nightLight.Parent then
 		return
 	end
 
-	local lightCount = 0
+	local lights: { Light } = {}
 	if nightLight:IsA("Light") then
-		nightLight.Enabled = enabled
-		lightCount += 1
+		table.insert(lights, nightLight)
 	end
 	for _, descendant in nightLight:GetDescendants() do
 		if descendant:IsA("Light") then
-			descendant.Enabled = enabled
-			lightCount += 1
+			table.insert(lights, descendant)
 		end
 	end
 
-	if lightCount == 0 then
+	if #lights == 0 then
 		warn(`[DayNightController] {nightLight:GetFullName()} contains no Light instances to toggle`)
+		return
+	end
+
+	for _, light in lights do
+		local base = _nightLightBases[light]
+		if not base then
+			base = light.Brightness
+			_nightLightBases[light] = base
+		end
+		if enabled then
+			if not light.Enabled then
+				light.Brightness = 0
+				light.Enabled = true
+			end
+			local tween = TweenService:Create(light, info, { Brightness = base })
+			_transitionTrove:Add(tween)
+			tween:Play()
+		else
+			local tween = TweenService:Create(light, info, { Brightness = 0 })
+			_transitionTrove:Add(tween)
+			-- Disable only once fully faded; a cancelled fade (new phase) leaves the light to the next tween.
+			tween.Completed:Connect(function(state: Enum.PlaybackState)
+				if state == Enum.PlaybackState.Completed then
+					light.Enabled = false
+				end
+			end)
+			tween:Play()
+		end
 	end
 end
 
@@ -79,6 +112,7 @@ local function _attachNightLight(character: Model): ()
 		_nightLight:Destroy()
 		_nightLight = nil
 	end
+	table.clear(_nightLightBases)
 
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local template = assets and assets:FindFirstChild("NightLight", true)
@@ -90,7 +124,7 @@ local function _attachNightLight(character: Model): ()
 	_nightLight = template:Clone()
 	_nightLight.Name = "NightLight"
 	_nightLight.Parent = character
-	_setNightLightEnabled(_phase == "Night")
+	_setNightLightEnabled(_phase == "Night", _instantInfo)
 end
 
 local function _resolveOrCreate(name: string, create: () -> Instance): Instance
@@ -143,6 +177,22 @@ local function _tweenLighting(phase: Phase, info: TweenInfo): ()
 	end
 end
 
+-- Sweeps the sun forward (never backwards through noon) to the phase's held clock. The server
+-- stops writing ClockTime for transitionDuration, then resumes from the same value, so there's no snap.
+local function _tweenClock(phase: Phase, info: TweenInfo): ()
+	local target = if phase == "Night" then DayNightConfig.nightClockTime else DayNightConfig.daySunClockStart
+	local from = Lighting.ClockTime
+	local driver = Instance.new("NumberValue")
+	driver.Value = from
+	_transitionTrove:Add(driver)
+	_transitionTrove:Connect(driver.Changed, function(value: number)
+		Lighting.ClockTime = value % 24
+	end)
+	local tween = TweenService:Create(driver, info, { Value = from + (target - from) % 24 })
+	_transitionTrove:Add(tween)
+	tween:Play()
+end
+
 local function _cacheCampfire(model: Instance): ()
 	for _, descendant in model:GetDescendants() do
 		if descendant:IsA("PointLight") and not _campfireLightBases[descendant] then
@@ -153,11 +203,14 @@ local function _cacheCampfire(model: Instance): ()
 	end
 end
 
-local function _tweenCampfires(night: boolean, info: TweenInfo): ()
+local function _tweenCampfires(night: boolean, info: TweenInfo, only: Instance?): ()
 	local boost = DayNightConfig.campfireNightBoost
 	for light, base in _campfireLightBases do
 		if not light.Parent then
 			_campfireLightBases[light] = nil
+			continue
+		end
+		if only and not light:IsDescendantOf(only) then
 			continue
 		end
 		local tween = TweenService:Create(light, info, {
@@ -170,6 +223,9 @@ local function _tweenCampfires(night: boolean, info: TweenInfo): ()
 	for fire, base in _campfireFireBases do
 		if not fire.Parent then
 			_campfireFireBases[fire] = nil
+			continue
+		end
+		if only and not fire:IsDescendantOf(only) then
 			continue
 		end
 		local tween = TweenService:Create(fire, info, {
@@ -270,7 +326,7 @@ end
 
 local function _evaluateSafezone(dt: number): ()
 	local target = 1
-	if _phase == "Night" then
+	if _phase == "Night" and os.clock() >= _darknessReadyAt then
 		local root = CharacterUtils.getPlayerRoot(Players.LocalPlayer)
 		target = if root and _isInSafezone(root.Position) then 1 else 0
 	end
@@ -278,18 +334,28 @@ local function _evaluateSafezone(dt: number): ()
 	_applySafezoneVisual(_safezoneFactor)
 end
 
-local function _setPhase(phase: Phase): ()
+local function _setPhase(phase: Phase, info: TweenInfo): ()
+	local night = phase == "Night"
+	local instant = info.Time <= 0
 	_phase = phase
 	_transitionTrove:Clean()
 	_refreshTaggedTargets()
-	_setNightLightEnabled(phase == "Night")
+	_setNightLightEnabled(night, info)
 
-	_tweenLighting(phase, _instantInfo)
-	_tweenCampfires(phase == "Night", _instantInfo)
-	_tweenCart(phase == "Night", _instantInfo)
+	_tweenLighting(phase, info)
+	_tweenCampfires(night, info)
+	_tweenCart(night, info)
+	-- On an instant sync the server's replicated ClockTime is already correct.
+	if not instant then
+		_tweenClock(phase, info)
+	end
 
-	_safezoneFactor = if phase == "Night" then _safezoneFactor else 1
-	_applySafezoneVisual(_safezoneFactor)
+	-- Personal darkness waits for the global fade, then builds through factorLerpRate.
+	_darknessReadyAt = os.clock() + info.Time
+	if instant and not night then
+		_safezoneFactor = 1
+		_applySafezoneVisual(_safezoneFactor)
+	end
 end
 
 local function _buildOverlay(): ()
@@ -320,19 +386,26 @@ local function _buildOverlay(): ()
 	_trove:Add(screenGui)
 end
 
+function DayNightController:onNightWarning(): ()
+	NotificationController:push(
+		DayNightConfig.nightApproachMessage,
+		DayNightConfig.notificationDuration,
+		NotificationController.PRIORITY_MED,
+		"Alert"
+	)
+end
+
 function DayNightController:onPhaseChange(phase: Phase): ()
 	_phaseInitialized = true
-	if phase == "Night" then
+	if phase == "Day" then
 		NotificationController:push(
-			DayNightConfig.nightApproachMessage,
-			3,
-			NotificationController.PRIORITY_MED,
-			"Alert"
+			DayNightConfig.dawnMessage,
+			DayNightConfig.notificationDuration,
+			NotificationController.PRIORITY_LOW,
+			"Info"
 		)
-	elseif phase == "Day" then
-		NotificationController:push(DayNightConfig.dawnMessage, 3, NotificationController.PRIORITY_LOW, "Info")
 	end
-	_setPhase(phase)
+	_setPhase(phase, _transitionInfo)
 end
 
 function DayNightController:OnStart(): ()
@@ -371,7 +444,8 @@ function DayNightController:OnStart(): ()
 	_trove:Connect(CollectionService:GetInstanceAddedSignal(CAMPFIRE_TAG), function(model: Instance)
 		_cacheCampfire(model)
 		if _phase == "Night" then
-			_tweenCampfires(true, _instantInfo)
+			-- Only the new fire snaps; the rest may be mid-transition.
+			_tweenCampfires(true, _instantInfo, model)
 		end
 	end)
 
@@ -384,7 +458,7 @@ function DayNightController:OnStart(): ()
 	task.spawn(function()
 		local phase: Phase? = _networker:fetch("getPhase")
 		if not _phaseInitialized then
-			_setPhase(phase or "Day")
+			_setPhase(phase or "Day", _instantInfo)
 		end
 	end)
 

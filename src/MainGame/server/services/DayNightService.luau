@@ -31,6 +31,9 @@ local _dayNightNetworker: NetworkerServer
 
 local _lasthungerCycle: number = 0
 local _lastthirstCycle: number = 0
+local _pendingNightAt: number? = nil
+-- Clients tween ClockTime themselves during a transition; writing it here would replicate and snap them.
+local _clockHoldUntil: number = 0
 
 local DayNightService = {}
 
@@ -39,6 +42,21 @@ local function phaseForHour(hour: number): Phase
 		return "Day"
 	end
 	return "Night"
+end
+
+local function _displayClockTime(clockTime: number): number
+	if _phase == "Night" then
+		return DayNightConfig.nightClockTime
+	end
+	local dayLength: number = (DayNightConfig.nightApproachHour - DayNightConfig.dawnHour) % 24
+	local alpha: number = math.clamp(((clockTime - DayNightConfig.dawnHour) % 24) / dayLength, 0, 1)
+	return DayNightConfig.daySunClockStart + (DayNightConfig.daySunClockEnd - DayNightConfig.daySunClockStart) * alpha
+end
+
+local function _setPhase(phase: Phase, serverTime: number): ()
+	_phase = phase
+	_clockHoldUntil = serverTime + DayNightConfig.transitionDuration
+	_dayNightNetworker:fireAll("onPhaseChange", _phase)
 end
 
 function DayNightService:HungerStep()
@@ -69,6 +87,8 @@ end
 function DayNightService:OnStart()
 	_startTime = workspace:GetServerTimeNow()
 	_phase = phaseForHour(math.floor(DayNightService:getTime()))
+	Lighting:SetAttribute(DayNightConfig.gameHourAttribute, _lastHour)
+	Lighting.ClockTime = _displayClockTime(DayNightService:getTime())
 
 	local networker: NetworkerServer = Networker.server.new(Network.Game)
 	_hudNetworker = Networker.server.new(Network.Hud, DayNightService, { DayNightService.getDay })
@@ -82,7 +102,14 @@ function DayNightService:OnStart()
 		local elapsed: number = serverTime - _startTime
 		local clockTime: number = DayNightService:getTime()
 
-		Lighting.ClockTime = clockTime
+		if _pendingNightAt and serverTime >= _pendingNightAt then
+			_pendingNightAt = nil
+			if _phase ~= "Night" then _setPhase("Night", serverTime) end
+		end
+
+		if serverTime >= _clockHoldUntil then
+			Lighting.ClockTime = _displayClockTime(clockTime)
+		end
 
 		local cycleHunger: number = math.floor(elapsed / DayNightConfig.hungerCycle)
 		if cycleHunger > _lasthungerCycle then
@@ -108,6 +135,7 @@ function DayNightService:OnStart()
 		if hour == _lastHour then return end
 		local prevHour: number = _lastHour
 		_lastHour = hour
+		Lighting:SetAttribute(DayNightConfig.gameHourAttribute, hour)
 
 		-- Loop handles multiple hours crossed in one tick during lag spikes.
 		local hoursElapsed: number = (hour - prevHour) % 24
@@ -117,12 +145,12 @@ function DayNightService:OnStart()
 				GameSignals.HuntersSpawned:Fire()
 				networker:fireAll("onHuntersSpawned")
 			end
-			if crossedHour == DayNightConfig.nightApproachHour and _phase ~= "Night" then
-				_phase = "Night"
-				_dayNightNetworker:fireAll("onPhaseChange", _phase)
+			if crossedHour == DayNightConfig.nightApproachHour and _phase ~= "Night" and not _pendingNightAt then
+				_pendingNightAt = serverTime + DayNightConfig.nightWarningLeadSeconds
+				_dayNightNetworker:fireAll("onNightWarning")
 			elseif crossedHour == DayNightConfig.dawnHour and _phase ~= "Day" then
-				_phase = "Day"
-				_dayNightNetworker:fireAll("onPhaseChange", _phase)
+				_pendingNightAt = nil
+				_setPhase("Day", serverTime)
 			end
 		end
 	end)

@@ -54,6 +54,21 @@ local DayNightConfig = {
 
 	nightApproachMessage = "Night approaching",
 	dawnMessage = "Dawn breaks",
+	notificationDuration = 3,
+
+	-- The warning fires at nightApproachHour; the phase flips this many seconds later.
+	-- Lead + transitionDuration must stay shorter than one in-game hour so hunters arrive after the fade.
+	nightWarningLeadSeconds = 5,
+
+	-- The displayed sun is decoupled from the gameplay clock: the Day phase is squeezed into this band
+	-- so the sun never sets while it is "day", and the Night phase holds a fixed moonlit clock.
+	daySunClockStart = 8,
+	daySunClockEnd = 16,
+	nightClockTime = 0,
+
+	transitionDuration = 2,
+	transitionEasingStyle = Enum.EasingStyle.Sine,
+	transitionEasingDirection = Enum.EasingDirection.InOut,
 
 	presets = {
 		Day = {
@@ -134,6 +149,9 @@ local DayNightConfig = {
 		lightRange = 60,
 		lightColor = Color3.fromRGB(255, 180, 90),
 	},
+
+	-- Lighting attribute carrying the real in-game hour, since ClockTime is now display-only.
+	gameHourAttribute = "gameHour",
 }
 
 return DayNightConfig
