@@ -30,6 +30,8 @@ local States = EnemyConfig.states
 
 local _trove = Trove.new()
 local _activeEnemies: { [Model]: EnemyComponentInterface } = {}
+-- Last time each group (spawnId) was seen in warning range of each player; entries expire after warningCooldown.
+local _lastWarned: { [Player]: { [string]: number } } = {}
 
 local _pathfinder = EnemyPathfinder.new({
 	agentParams = EnemyConfig.agentParams,
@@ -94,7 +96,7 @@ function EnemyAIService:_moveToward(model: Model, targetPos: Vector3, immediate:
 	_pathfinder:moveTo(model, humanoid, enemyHRP.Position, _clampOutsideProtection(targetPos), _clampOutsideProtection, immediate)
 end
 
-function EnemyAIService:_scanDetection(networker: NetworkerServer): ()
+function EnemyAIService:_scanDetection(): ()
 	for model, comp in _activeEnemies do
 		if comp:getState() ~= States.PATROL then continue end
 
@@ -106,7 +108,6 @@ function EnemyAIService:_scanDetection(networker: NetworkerServer): ()
 		local closestPlayer: Player? = nil
 		local closestHRP: BasePart? = nil
 		local closestDist: number = math.huge
-		local warned: { [Player]: boolean } = comp:getWarnedPlayers()
 		for _, player in Players:GetPlayers() do
 			local hrp: BasePart? = CharacterUtils.getPlayerRoot(player)
 			if not hrp then continue end
@@ -117,18 +118,45 @@ function EnemyAIService:_scanDetection(networker: NetworkerServer): ()
 				closestHRP = hrp
 				closestDist = dist
 			end
-			if dist <= EnemyConfig.warningRange and not warned[player] then
-				comp:setWarned(player, true)
-				networker:fire(player, "onEnemyWarning", comp:getEntityType())
-			elseif dist > EnemyConfig.warningRange + 10 and warned[player] then
-				comp:setWarned(player, false)
-			end
 		end
 		if closestPlayer and closestHRP then
 			comp:setState(States.ALERTED)
 			comp:setTarget(closestPlayer)
 			EnemySignals.EnemyAggro:Fire(model, closestPlayer)
 			EnemyAIService:_moveToward(model, closestHRP.Position, true, closestDist <= EnemyConfig.directChaseRange)
+		end
+	end
+end
+
+-- Runs for every live hostile, not just patrolling ones, so engaged guards and night hunters still warn.
+function EnemyAIService:_scanWarnings(networker: NetworkerServer): ()
+	local now: number = os.clock()
+	for _, byGroup in _lastWarned do
+		for spawnId, seenAt in byGroup do
+			if now - seenAt > EnemyConfig.warningCooldown then
+				byGroup[spawnId] = nil
+			end
+		end
+	end
+
+	for model, comp in _activeEnemies do
+		if comp:getState() == States.DEAD then continue end
+		local enemyHRP: BasePart? = CharacterUtils.getRoot(model)
+		if not enemyHRP then continue end
+		local spawnId: string = comp:getSpawnId()
+
+		for _, player in Players:GetPlayers() do
+			local hrp: BasePart? = CharacterUtils.getPlayerRoot(player)
+			if not hrp or _isProtected(hrp.Position) then continue end
+			if (hrp.Position - enemyHRP.Position).Magnitude > EnemyConfig.warningRange then continue end
+
+			local byGroup: { [string]: number } = _lastWarned[player] or {}
+			_lastWarned[player] = byGroup
+			-- Refreshed every tick in range, so a group only re-warns after being out of range for the cooldown.
+			if byGroup[spawnId] == nil then
+				networker:fire(player, "onEnemyWarning", comp:getEntityType(), not comp:isGuard())
+			end
+			byGroup[spawnId] = now
 		end
 	end
 end
@@ -257,9 +285,14 @@ function EnemyAIService:OnStart(): ()
 		_clearEnemyState(instance :: Model)
 	end)
 
+	_trove:Connect(Players.PlayerRemoving, function(player: Player)
+		_lastWarned[player] = nil
+	end)
+
 	local detectionTimer = _trove:Add(Timer.new(0.25))
 	detectionTimer.Tick:Connect(function()
-		EnemyAIService:_scanDetection(networker)
+		EnemyAIService:_scanDetection()
+		EnemyAIService:_scanWarnings(networker)
 	end)
 	detectionTimer:Start()
 

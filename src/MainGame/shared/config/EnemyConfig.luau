@@ -1,4 +1,7 @@
 --!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local DayNightConfig = require(ReplicatedStorage.Shared.config.DayNightConfig)
 
 export type TierEntry = {
 	dayMin: number,
@@ -20,6 +23,13 @@ local EnemyConfig = {
 	},
 
 	warningRange = 70,
+	-- A group warns once on entering range, then stays quiet until it has been out of range this long.
+	warningCooldown = 30,
+	warningDuration = 4,
+	warningMessages = {
+		guard = "%s nearby!",
+		night = "Night hunters closing in!",
+	},
 	detectionRange = 30,
 	attackRange = 5,
 	directChaseRange = 15,
@@ -29,6 +39,11 @@ local EnemyConfig = {
 	patrolWaitMax = 5,
 
 	defaultRespawnDelay = 480,
+
+	-- Loot box areas (guards + chest) come back one in-game day after the guards are wiped or the chest is opened.
+	guardRespawnDelay = DayNightConfig.cycleDuration,
+	-- Respawns wait until nobody is this close, so guards and chests never pop in on screen.
+	guardRespawnMinPlayerDistance = 150,
 
 	chaseLeashRadius = 40,
 

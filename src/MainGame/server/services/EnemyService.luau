@@ -31,6 +31,10 @@ type SpawnRecord = {
 	nightOnly: boolean,
 	biome: string,
 	lootBoxModel: Model?,
+	-- Unparented copy of the chest taken at spawn, so a looted (destroyed) chest can be restored.
+	lootBoxTemplate: Model?,
+	lootBoxCFrame: CFrame?,
+	lootBoxParent: Instance?,
 	nextRespawnAt: number?,
 	activeEnemies: { [Model]: boolean },
 }
@@ -72,6 +76,35 @@ local function _getTier(dayCount: number, biome: string): TierEntry
 	-- Each biome deeper into the progression bumps difficulty one tier
 	tierIndex = math.min(tierCount, tierIndex + MapGenerationService:GetBiomeIndex(biome) - 1)
 	return EnemyConfig.tiers[tierIndex]
+end
+
+local function _anyPlayerWithin(position: Vector3, radius: number): boolean
+	for _, player in Players:GetPlayers() do
+		local hrp: BasePart? = CharacterUtils.getPlayerRoot(player)
+		if hrp and (hrp.Position - position).Magnitude <= radius then
+			return true
+		end
+	end
+	return false
+end
+
+local function _countActive(record: SpawnRecord): number
+	local count: number = 0
+	for _ in record.activeEnemies do
+		count += 1
+	end
+	return count
+end
+
+local function _snapshotLootBox(chest: Model): Model
+	local template: Model = chest:Clone()
+	-- ChestComponent adds its prompt in Start; the restored clone gets a fresh one when the tag rebinds.
+	for _, d in template:GetDescendants() do
+		if d:IsA("ProximityPrompt") then
+			d:Destroy()
+		end
+	end
+	return template
 end
 
 local function _pickRandom(pool: { string }): string
@@ -247,18 +280,64 @@ local function _spawnGuardGroup(chest: Model): ()
 	local tier: TierEntry = _getTier(_dayCount, biome)
 	local count: number = _rand:NextInteger(tier.guardCount.min, tier.guardCount.max)
 	local id: string = _newSpawnId()
+	chest:SetAttribute("spawnId", id)
 	local record: SpawnRecord = {
 		id = id,
 		origin = origin,
 		nightOnly = false,
 		biome = biome,
 		lootBoxModel = chest,
+		lootBoxTemplate = _snapshotLootBox(chest),
+		lootBoxCFrame = chest:GetPivot(),
+		lootBoxParent = chest.Parent,
 		nextRespawnAt = nil,
 		activeEnemies = {},
 	}
 	_spawnRegistry[id] = record
 
 	_spawnGroup(record, _poolForBiome(tier.guardPool, biome), count, 15, 25, chest:GetAttribute("caveLayer") ~= nil)
+end
+
+local function _destroyTemplate(record: SpawnRecord): ()
+	local template: Model? = record.lootBoxTemplate
+	if template then
+		template:Destroy()
+		record.lootBoxTemplate = nil
+	end
+end
+
+local function _restoreLootBox(record: SpawnRecord): ()
+	local existing: Model? = record.lootBoxModel
+	if existing and existing.Parent ~= nil then return end
+	local template: Model? = record.lootBoxTemplate
+	local cframe: CFrame? = record.lootBoxCFrame
+	if not template or not cframe then return end
+	local chest: Model = template:Clone()
+	chest:PivotTo(cframe)
+	chest.Parent = record.lootBoxParent
+	record.lootBoxModel = chest
+end
+
+local function _respawnGuards(record: SpawnRecord): ()
+	-- The biome container went away, so there is nowhere to put the area back.
+	local parent: Instance? = record.lootBoxParent
+	if not parent or parent.Parent == nil then
+		_destroyTemplate(record)
+		_spawnRegistry[record.id] = nil
+		return
+	end
+	if record.origin.Z < VirusService:GetBoundaryZ() then return end
+	if _anyPlayerWithin(record.origin, EnemyConfig.guardRespawnMinPlayerDistance) then return end
+
+	_restoreLootBox(record)
+
+	-- Top up rather than add a full group, so opening the chest past living guards doesn't stack them.
+	local tier: TierEntry = _getTier(_dayCount, record.biome)
+	local target: number = _rand:NextInteger(tier.guardCount.min, tier.guardCount.max)
+	local missing: number = target - _countActive(record)
+	local lootBox: Model? = record.lootBoxModel
+	_spawnGroup(record, _poolForBiome(tier.guardPool, record.biome), missing, 15, 25, lootBox ~= nil and lootBox:GetAttribute("caveLayer") ~= nil)
+	record.nextRespawnAt = nil
 end
 
 local function _isNearCoveredCenter(pos: Vector3, coveredCenters: { Vector3 }): boolean
@@ -290,6 +369,9 @@ local function _spawnNightEnemies(): ()
 			nightOnly = true,
 			biome = biome,
 			lootBoxModel = nil,
+			lootBoxTemplate = nil,
+			lootBoxCFrame = nil,
+			lootBoxParent = nil,
 			nextRespawnAt = nil,
 			activeEnemies = {},
 		}
@@ -325,16 +407,7 @@ local function _checkRespawns(): ()
 			_spawnGroup(record, _getNightPool(tier, record.biome), count, 80, 150)
 			record.nextRespawnAt = nil
 		else
-			local lootBox: Model? = record.lootBoxModel
-			if lootBox and lootBox.Parent == nil then
-				_spawnRegistry[record.id] = nil
-				continue
-			end
-			if record.origin.Z < VirusService:GetBoundaryZ() then continue end
-			local tier: TierEntry = _getTier(_dayCount, record.biome)
-			local count: number = _rand:NextInteger(tier.guardCount.min, tier.guardCount.max)
-			_spawnGroup(record, _poolForBiome(tier.guardPool, record.biome), count, 15, 25, lootBox ~= nil and lootBox:GetAttribute("caveLayer") ~= nil)
-			record.nextRespawnAt = nil
+			_respawnGuards(record)
 		end
 	end
 end
@@ -371,9 +444,18 @@ function EnemyService:OnStart(): ()
 		local record: SpawnRecord? = _spawnRegistry[spawnId]
 		if not record then return end
 		record.activeEnemies[model] = nil
-		if next(record.activeEnemies) == nil then
-			record.nextRespawnAt = os.clock() + EnemyConfig.defaultRespawnDelay
+		if next(record.activeEnemies) == nil and record.nextRespawnAt == nil then
+			local delay: number = if record.nightOnly then EnemyConfig.defaultRespawnDelay else EnemyConfig.guardRespawnDelay
+			record.nextRespawnAt = os.clock() + delay
 		end
+	end)
+
+	-- Looting spends the area even if its guards were snuck past; whichever comes first starts the clock.
+	_trove:Connect(GameSignals.LootBoxOpened, function(chest: Model)
+		local spawnId: string? = chest:GetAttribute("spawnId") :: string?
+		local record: SpawnRecord? = if spawnId then _spawnRegistry[spawnId] else nil
+		if not record or record.nextRespawnAt ~= nil then return end
+		record.nextRespawnAt = os.clock() + EnemyConfig.guardRespawnDelay
 	end)
 
 	local respawnTimer = _trove:Add(Timer.new(10))

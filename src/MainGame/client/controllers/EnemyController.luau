@@ -8,14 +8,11 @@ local NotificationController = require(script.Parent.NotificationController)
 
 local EnemyController = {}
 
-function EnemyController:onEnemyWarning(entityType: string): ()
-	local displayName: string = EnemyConfig.displayNames[entityType] or entityType
-	NotificationController:push(
-		displayName .. " are nearby!",
-		4,
-		NotificationController.PRIORITY_HIGH,
-		"Alert"
-	)
+function EnemyController:onEnemyWarning(entityType: string, isNight: boolean?): ()
+	local message: string = if isNight
+		then EnemyConfig.warningMessages.night
+		else string.format(EnemyConfig.warningMessages.guard, EnemyConfig.displayNames[entityType] or entityType)
+	NotificationController:push(message, EnemyConfig.warningDuration, NotificationController.PRIORITY_HIGH, "Alert")
 end
 
 function EnemyController:OnStart(): ()

@@ -8,4 +8,5 @@ return {
 	MapSpawnReady = Signal.new(),
 	MapGenerationCompleted = Signal.new(),
 	BiomeFeaturesGenerated = Signal.new(),
+	LootBoxOpened = Signal.new(),
 }

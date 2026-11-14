@@ -28,7 +28,7 @@ function EnemyComponent:Construct()
 	self._homePos = self.Instance:GetAttribute("lootBoxPos") :: Vector3? or self.Instance:GetPivot().Position
 	self._state = States.IDLE
 	self._currentTarget = nil :: Player?
-	self._warnedPlayers = {} :: { [Player]: boolean }
+	self._isGuard = self.Instance:GetAttribute("lootBoxPos") ~= nil
 
 	-- AI runtime state, owned here rather than smeared across parallel
 	-- model-keyed tables in EnemyAIService.
@@ -129,12 +129,12 @@ function EnemyComponent:getEntityType(): string
 	return self._entityType
 end
 
-function EnemyComponent:getWarnedPlayers(): { [Player]: boolean }
-	return self._warnedPlayers
+function EnemyComponent:getSpawnId(): string
+	return self._spawnId
 end
 
-function EnemyComponent:setWarned(player: Player, v: boolean): ()
-	self._warnedPlayers[player] = v
+function EnemyComponent:isGuard(): boolean
+	return self._isGuard
 end
 
 function EnemyComponent:getLastAttackTime(): number

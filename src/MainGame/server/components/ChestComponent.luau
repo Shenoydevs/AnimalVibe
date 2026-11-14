@@ -12,6 +12,9 @@ local EquipStateService = require(ServerScriptService.Server.services.EquipState
 local InventoryService = require(ServerScriptService.Server.services.InventoryService)
 local NotificationService = require(ServerScriptService.Server.services.NotificationService)
 
+local signals = require(ServerScriptService.Server.signals)
+local GameSignals = signals.GameSignals
+
 local _rand = Random.new()
 
 local ChestComponent = Component.new({ Tag = "Chest" })
@@ -101,6 +104,7 @@ function ChestComponent:_handleOpen(player: Player): ()
 
 	self._opened = true
 	self._prompt:Destroy()
+	GameSignals.LootBoxOpened:Fire(self.Instance)
 
 	NotificationService:notify(player, "Success", `You found {ItemConfig[itemId].displayName}!`, 4, NotificationConfig.priority.med)
 
