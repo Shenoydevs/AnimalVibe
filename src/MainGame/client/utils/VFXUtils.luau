@@ -36,14 +36,20 @@ local function spawnHitVFX(character: Model, own: boolean): ()
 	local hitVFX = ReplicatedStorage.Assets.VFX.HitVFX:Clone()
 	hitVFX.Parent = workspace.Stuff
 	hitVFX.CFrame = root.CFrame
+	-- Scheduled before anything below can throw, so a bad asset never leaks the part.
+	Debris:AddItem(hitVFX, 3)
 
 	hitVFX.Effect.Hit:Emit(13)
 	hitVFX.Hit:Play()
 	if own then
-		hitVFX.AnimalDamage[character:GetAttribute("animalClass")]:Play()
+		local animalClass: string = tostring(character:GetAttribute("animalClass"))
+		local damageSound: Instance? = hitVFX.AnimalDamage:FindFirstChild(animalClass)
+		if damageSound and damageSound:IsA("Sound") then
+			damageSound:Play()
+		else
+			warn(`[VFXUtils] HitVFX.AnimalDamage has no Sound named "{animalClass}"`)
+		end
 	end
-
-	Debris:AddItem(hitVFX, 3)
 end
 
 function VFXUtils:DamageFlicker(character: Model, smackVFX: boolean): ()
